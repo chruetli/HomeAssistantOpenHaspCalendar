@@ -1,0 +1,196 @@
+alias: 7-Tages-Kalender
+description: ""
+triggers:
+  - minutes: /15
+    trigger: time_pattern
+  - event: start
+    trigger: homeassistant
+  - trigger: event
+    event_type: openhasp_event
+    event_data:
+      page_id: 1
+      object_id: 0
+      value: up
+conditions: []
+actions:
+  - variables:
+      calendars:
+        - calendar.xxx
+        - calendar.yyy
+        - calendar.family
+  - repeat:
+      for_each: "{{ calendars }}"
+      sequence:
+        - target:
+            entity_id: "{{ repeat.item }}"
+          data:
+            start_date_time: "{{ now().replace(hour=0, minute=0, second=0).isoformat() }}"
+            end_date_time: >-
+              {{ (now() + timedelta(days=7)).replace(hour=23, minute=59,
+              second=59).isoformat() }}
+          response_variable: calendar_response
+          action: calendar.get_events
+        - variables:
+            all_events: "{{ all_events | default([]) }}"
+            _tmp: >-
+              {% set ns = namespace(events=[]) %} {% for ev in
+              calendar_response[repeat.item].events | default([]) %}
+                {% set ns.events = ns.events + [
+                  {
+                    'start': ev.start,
+                    'end': ev.end,
+                    'summary': ev.summary,
+                    'calendar': repeat.item
+                  }
+                ] %}
+              {% endfor %} {{ ns.events }}
+        - variables:
+            all_events: "{{ all_events + _tmp }}"
+  - variables:
+      events: >-
+        {% set today = now().date() %}   {% set ns = namespace(result=[]) %}
+        {% set events = all_events | sort(attribute='start') %}
+
+         {% for offset in range(0, 7) %}
+            {% set day = today + timedelta(days=offset) %}
+            {% set ns.day_events = [] %}
+
+            {% for ev in all_events %}
+              {% set s = as_datetime(ev.start ~ 'T00:00:00') if ev.start | length == 10 else as_datetime(ev.start) %}
+              {% set e = as_datetime(ev.end ~ 'T00:00:00') if ev.end | length == 10 else as_datetime(ev.end) %}
+              {% if ev.start | length == 10 %}
+                # remove 'all day' events from last date
+                {% if s.date() <= day < e.date() %}
+                  {% set ns.day_events = ns.day_events + [ev] %}
+                {% endif %}
+              {% else %}
+                {% if s.date() <= day <= e.date() %}
+                  {% set ns.day_events = ns.day_events + [ev] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+
+            {% if ns.day_events %}
+              {% set ns.result = ns.result + [ { 'date' : day.strftime('%A %d.%m'), 'day' : day.strftime('%d'), 'dayAbbrev' : day.strftime('%a'), 'monthAbbrev': day.strftime('%b') } ] %}
+
+              {% for ev in ns.day_events | sort(attribute='start') %}
+                {% if ev.start | length == 10 %}
+                  {% set time = '' %}
+                {% else %}
+                  {% set time = as_datetime(ev.start).strftime('%H:%M') ~ ' - ' ~ as_datetime(ev.end).strftime('%H:%M') %}
+                  {% set time = '#666666 (\uE150' ~ time ~ ')' %}
+                {% endif %}
+                {% set ns.result = ns.result + [ {'text' :  ev.summary, 'time' : time, 'calendar' : ev.calendar } ] %}
+              {% endfor %}
+            {% else %}
+              {% set ns.result = ns.result + [ { 'date' : day.strftime('%A %d.%m'), 'day' : day.strftime('%d'), 'dayAbbrev' : day.strftime('%a'), 'monthAbbrev': day.strftime('%b') } ] %}
+              {% set ns.result = ns.result + [ {'text' :  '\uE12C keine anstehenden Termine' } ] %}
+            {% endif %}
+          {% endfor %}
+
+
+        {{ ns.result }}
+  - variables:
+      weekdayCount: 0
+      dayEntryCount: 0
+      actualPosition: 18
+      entryCount: 0
+    alias: Definiere Counter
+  - repeat:
+      count: 40
+      sequence:
+        - data:
+            topic: hasp/plate1/command
+            payload: |
+              {"page":1,"id":{{ 10 + repeat.index }},"text":""}
+          action: mqtt.publish
+  - repeat:
+      for_each: "{{ events }}"
+      sequence:
+        - choose:
+            - conditions:
+                - condition: template
+                  value_template: "{{ repeat.item.date | length > 0 }}"
+              sequence:
+                - data:
+                    topic: hasp/plate1/command
+                    payload: |-
+                      {
+                        "page": 1,
+                        "id": {{ 111 + 10 * weekdayCount }},
+                        "text": "{{ '#000000 ' ~ repeat.item.dayAbbrev ~ ' #' | replace('"', '\\"') }}",
+                        "text_font": 14,
+                        "y": {{ actualPosition + ([dayEntryCount, 2]|max)*31 }}
+                      }
+                  action: mqtt.publish
+                - action: mqtt.publish
+                  data:
+                    topic: hasp/plate1/command
+                    payload: |-
+                      {
+                        "page": 1,
+                        "id": {{ 112 + 10 * weekdayCount }},
+                        "text": "{{ '#000000 ' ~ repeat.item.day ~ ' #' | replace('"', '\\"') }}",
+                        "text_font": 26,
+                        "y": {{ actualPosition + ([dayEntryCount, 2]|max)*31 + 13 }}
+                      }
+                - action: mqtt.publish
+                  data:
+                    topic: hasp/plate1/command
+                    payload: |-
+                      {
+                        "page": 1,
+                        "id": {{ 114 + 10 * weekdayCount }},
+                        "text": "{{ '#000000 ' ~ repeat.item.monthAbbrev ~ ' #' | replace('"', '\\"') }}",
+                        "text_font": 12,
+                        "y": {{ actualPosition + ([dayEntryCount, 2]|max)*31 + 34 }}
+                      }
+                - action: mqtt.publish
+                  data:
+                    topic: hasp/plate1/command
+                    payload: |-
+                      {
+                        "page": 1,
+                        "id": {{ 113 + 10 * weekdayCount }},
+                        "points": {{ [[20, actualPosition + ([dayEntryCount, 2]|max)*31 - 6],[460, actualPosition + ([dayEntryCount, 2]|max)*31 - 6]] }}
+                      }
+                - action: mqtt.publish
+                  data:
+                    topic: hasp/plate1/command
+                    payload: |-
+                      {
+                        "page": 1,
+                        "id": {{ 110 + 10 * weekdayCount }},
+                        "points": {{ [[100, actualPosition - 2 ],[100, actualPosition + ([dayEntryCount, 2]|max)*31 - 10 ]] }}
+                      }
+                - variables:
+                    weekdayCount: "{{ weekdayCount + 1 }}"
+                    actualPosition: "{{ actualPosition + ([dayEntryCount, 2]|max)*31 }}"
+                    dayEntryCount: 0
+          default:
+            - data:
+                topic: hasp/plate1/command
+                payload: |-
+                  {
+                    "page": 1,
+                    "id": {{ 10 + entryCount }},
+                    "text": "{{ ('#666666 ' if repeat.item.calendar == 'calendar.family' else '#000000 ') ~ repeat.item.text ~ '# ' ~ repeat.item.time | replace('"', '\\"') }}",
+                    "x": 120,
+                    "y": {{ actualPosition + dayEntryCount*31  }},
+                    "mode": "dots"
+                  }
+              action: mqtt.publish
+            - variables:
+                dayEntryCount: "{{ dayEntryCount + 1 }}"
+                entryCount: "{{ entryCount + 1 }}"
+  - action: mqtt.publish
+    data:
+      topic: hasp/plate1/command
+      payload: |-
+        {
+          "page": 1,
+          "id": {{ 110 + 10 * weekdayCount }},
+          "points": {{ [[100, actualPosition - 2 ],[100, actualPosition + ([dayEntryCount, 2]|max)*31 - 10 ]] }}
+        }
+mode: restart
+
